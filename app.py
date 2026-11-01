@@ -122,7 +122,7 @@ preview_size = st.selectbox(
     key="video_preview_size",
     help="Changes the size of the editable video preview immediately. Detection starts only when you click Run detection.",
 )
-preview_widths = {"Small": 640, "Medium": 1000, "Large": 1400}
+preview_widths = {"Small": 640, "Medium": 900, "Large": 1200}
 preview_width = preview_widths[preview_size]
 canvas_width = max(1, min(width, preview_widths[preview_size]))
 canvas_height = max(1, round(height * canvas_width / width))
@@ -137,7 +137,7 @@ controls_col, preview_col = st.columns([1, 1.8], gap="large")
 with controls_col:
     st.markdown("### Edit lane corner points")
     st.write("Drag the numbered handles on the video. Each lane is a quadrilateral with four draggable corners.")
-    if st.button("Reset lane regions", width='stretch'):
+    if st.button("Reset lane regions", use_container_width=True):
         sx, sy = width / 1280, height / 720
         reset_regions = {}
         for i in range(selected_lane_count):
@@ -150,8 +150,6 @@ with controls_col:
         st.session_state.pop("processed_video_bytes", None)
 
         # Force streamlit-drawable-canvas to rebuild from the reset coordinates.
-        # Without a new component key, its browser-side drawing can keep the old
-        # points and overwrite the reset regions on the next rerun.
         st.session_state["region_reset_version"] = (
             st.session_state.get("region_reset_version", 0) + 1
         )
@@ -176,7 +174,6 @@ with preview_col:
 
     radius = max(7, round(canvas_width / 100))
     canvas_objects = []
-    # Stable ordering: each lane's four points, sequentially.
     for lane_index, (lane_name, points) in enumerate(regions.items()):
         for point_index, (px, py) in enumerate(points, start=1):
             cx, cy = px / scale_x, py / scale_y
@@ -197,7 +194,7 @@ with preview_col:
         update_streamlit=True,
         height=canvas_height,
         width=canvas_width,
-        drawing_mode="point",  # Avoid creating a new point/dot on every canvas click; use the Edit toggle to drag existing handles.
+        drawing_mode="point",
         key=(
             f"drag-canvas-{video_key}-{frame_index}-{selected_lane_count}-"
             f"{canvas_width}-{st.session_state.get('region_reset_version', 0)}"
@@ -208,10 +205,6 @@ with preview_col:
         objects = canvas_result.json_data.get("objects", [])
         expected_objects = selected_lane_count * 4
 
-        # The canvas library still allows drawing in its selected drawing mode.
-        # If a click creates an extra shape, immediately discard it by rebuilding
-        # the canvas from the saved lane handles. Only the original lane handles
-        # are allowed to remain on the preview.
         if len(objects) > expected_objects:
             st.rerun()
 
@@ -269,17 +262,17 @@ with threshold_col:
 with run_col:
     st.caption("The model is loaded only when you start analysis.")
 
+
+
 if st.button("Run detection on uploaded video", type="primary", use_container_width=True):
     if not model_path.exists():
         st.error(f"Model not found: {model_path}. Place your fine-tuned best.pt file in the project's models/ folder.")
         st.stop()
 
-    # Snapshot every configured lane before processing.
     lane_polygons = {
         name: np.array(points, dtype=np.int32)
         for name, points in st.session_state["regions"].items()
     }
-    # Cumulative unique vehicle counts, based on tracker IDs across the video.
     lane_counts_total = {name: 0 for name in lane_polygons}
     seen_vehicle_ids_by_lane = {name: set() for name in lane_polygons}
     seen_vehicle_ids_any_lane = set()
@@ -290,7 +283,6 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
         st.error(f"Could not load the YOLO model: {exc}")
         st.stop()
 
-    # A temporary output path avoids overwriting project files.
     output_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     output_path = output_temp.name
     output_temp.close()
@@ -308,7 +300,6 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
     output_height = int(processing_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(processing_cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # MP4V is broadly supported by OpenCV on Windows. Check writer before processing.
     writer = cv2.VideoWriter(
         output_path,
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -333,7 +324,6 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
     status = st.empty()
     frames_processed = 0
 
-    # Resolve model class names and use vehicle-like labels where the model exposes them.
     names = model.names
     if isinstance(names, dict):
         name_items = names.items()
@@ -353,7 +343,6 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
             if not ret_frame:
                 break
 
-            # Track vehicles across frames so cumulative totals count each tracked vehicle once.
             result = model.track(
                 current_frame,
                 imgsz=640,
@@ -363,9 +352,8 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
                 verbose=False,
             )[0]
 
-            # Draw YOLO bounding boxes and class/confidence labels for all detected objects,
-            # like the original OpenCV script. Lane polygons are used separately for counting.
-            annotated = result.plot(line_width=2)
+            # Use custom line width and smaller label font size
+            annotated = result.plot(line_width=1, font_size=1)
 
             frame_lane_counts = {name: 0 for name in lane_polygons}
             total_vehicles_in_lanes = 0
@@ -381,15 +369,12 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
                     center_y = int((y_min + y_max) / 2)
                     confidence_value = float(box.conf[0].item()) if box.conf is not None else 0.0
 
-                    # Live counts are vehicles currently inside each lane.
                     inside_lanes = []
                     for lane_name, polygon in lane_polygons.items():
                         if cv2.pointPolygonTest(polygon, (float(center_x), float(center_y)), False) >= 0:
                             frame_lane_counts[lane_name] += 1
                             inside_lanes.append(lane_name)
 
-                    # Cumulative counts use tracker IDs so the same vehicle is not
-                    # repeatedly counted in every frame it remains visible.
                     track_id = None
                     if box.id is not None:
                         track_id = int(box.id[0].item())
@@ -406,19 +391,14 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
             for lane_index, (lane_name, polygon) in enumerate(lane_polygons.items()):
                 color = LANE_BGR[lane_index]
                 cv2.polylines(annotated, [polygon], True, color, 3)
-                # Put a lane label near the polygon's first corner.
                 label_x, label_y = map(int, polygon[0])
                 cv2.putText(annotated, f"{lane_name}: {frame_lane_counts[lane_name]}",
                             (max(5, label_x), max(25, label_y - 8)), cv2.FONT_HERSHEY_SIMPLEX,
                             0.65, color, 2, cv2.LINE_AA)
 
-            # Counts are rendered in a separate Streamlit side panel, not over the video.
-            # This keeps the detection preview unobstructed.
-
             writer.write(annotated)
             frames_processed += 1
 
-            # Show a live annotated frame in the Streamlit page during inference.
             if frames_processed == 1 or frames_processed % 3 == 0:
                 preview_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
                 live_preview.image(
@@ -461,7 +441,6 @@ if st.button("Run detection on uploaded video", type="primary", use_container_wi
         st.error("No frames were processed. The video may be invalid or unsupported.")
         st.stop()
 
-    # Keep the result in session state so it remains available after Streamlit reruns.
     with open(output_path, "rb") as processed_file:
         st.session_state["processed_video_bytes"] = processed_file.read()
     st.session_state["processed_video_name"] = f"{Path(uploaded_video.name).stem}_detected.mp4"
