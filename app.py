@@ -122,7 +122,7 @@ preview_size = st.selectbox(
     key="video_preview_size",
     help="Changes the size of the editable video preview immediately. Detection starts only when you click Run detection.",
 )
-preview_widths = {"Small": 640, "Medium": 900, "Large": 1200}
+preview_widths = {"Small": 640, "Medium": 900, "Large": 1000}
 preview_width = preview_widths[preview_size]
 canvas_width = max(1, min(width, preview_widths[preview_size]))
 canvas_height = max(1, round(height * canvas_width / width))
